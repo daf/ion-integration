@@ -248,7 +248,7 @@ def main():
 
             if not opts.nopause:
                 print "Pausing before starting..."
-                time.sleep(5)
+                time.sleep(5)       # this can be interrupted by busy loop sigalarm, in this case: oh well
 
         ccs = []
         pid_files = []
@@ -310,12 +310,26 @@ def main():
                 while not os.path.exists(lockfile):
                     if opts.debug:
                         print "\tWaiting for lockfile", lockfile, "to appear"
-                    time.sleep(1)
+                    try:
+                        time.sleep(1)
+                    except IOError:
+                        pass        # can be interrupted by busy loop detection sigalarm, must trap and continue
                 else:
                     # ok, lock file is up - wait until os tells us it is unlocked
                     lfh = open(lockfile, 'w')
                     print "\tLockfile appeared, waiting for container unlock..."
-                    result = fcntl.lockf(lfh, fcntl.LOCK_EX)
+
+                    unlocked = False
+
+                    while not unlocked:
+                        try:
+                            result = fcntl.lockf(lfh, fcntl.LOCK_EX)
+                            unlocked = True
+                        except IOError:
+                            # this can happen if a sigalarm triggers while we're waiting.  we have to re-run the lock command.
+                            print >>sys.stderr, "I GOT HOSED"
+                            pass
+
                     print "\tUnlocked!"
                     lfh.close()
                     os.unlink(lockfile)
@@ -351,7 +365,18 @@ def main():
 
             # wait on trial
             try:
-                cpid, status = os.waitpid(trialpid, 0)
+                waited = False
+                while not waited:
+                    try:
+                        cpid, status = os.waitpid(trialpid, 0)
+                        waited = True
+                    except OSError, ex:
+
+                        # complicated situation here, if errno is 4 it was a signal interrupt like a sigalarm busy loop detection, but it might be something else
+                        if ex.errno == 4:
+                            pass
+                        else:
+                            raise ex    # reraise to be caught just a bit below, as we won't have the right stuff set
 
                 # STATUS FROM TRIAL:
                 # 0     - test OK
